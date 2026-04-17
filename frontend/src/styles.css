@@ -1,0 +1,383 @@
+:root {
+  color-scheme: dark;
+  --bg: #0b1020;
+  --bg-alt: #121a30;
+  --panel: rgba(10, 16, 32, 0.76);
+  --panel-border: rgba(255, 255, 255, 0.08);
+  --text: #e8ecf8;
+  --muted: #9ba7c2;
+  --accent: #ff9f6e;
+  --accent-soft: #ffd166;
+  --cool: #79c7ff;
+  --success: #64d2a3;
+  --warning: #ffcd70;
+  --danger: #ff7f83;
+  --shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+  font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 0% 0%, rgba(121, 199, 255, 0.16), transparent 28%),
+    radial-gradient(circle at 100% 0%, rgba(255, 159, 110, 0.18), transparent 30%),
+    linear-gradient(160deg, #060a16 0%, #0b1020 45%, #131e35 100%);
+  color: var(--text);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+.app-shell {
+  position: relative;
+  overflow: hidden;
+  padding: 32px;
+  min-height: 100vh;
+}
+
+.ambient {
+  position: absolute;
+  width: 420px;
+  height: 420px;
+  border-radius: 50%;
+  filter: blur(80px);
+  opacity: 0.32;
+  pointer-events: none;
+}
+
+.ambient-left {
+  top: -120px;
+  left: -120px;
+  background: rgba(121, 199, 255, 0.32);
+}
+
+.ambient-right {
+  right: -100px;
+  top: 260px;
+  background: rgba(255, 159, 110, 0.26);
+}
+
+.hero,
+.metrics-grid,
+.content-grid {
+  position: relative;
+  z-index: 1;
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: 1.8fr 1fr;
+  gap: 24px;
+  align-items: end;
+  margin-bottom: 24px;
+}
+
+.eyebrow,
+.panel-kicker {
+  letter-spacing: 0.16em;
+  font-size: 0.72rem;
+  color: var(--accent-soft);
+  margin: 0 0 12px;
+}
+
+.hero h1,
+.panel h2 {
+  margin: 0;
+}
+
+.hero h1 {
+  font-size: clamp(2.5rem, 5vw, 4.6rem);
+  line-height: 0.98;
+  max-width: 10ch;
+}
+
+.hero-copy {
+  max-width: 62ch;
+  color: var(--muted);
+  font-size: 1.05rem;
+  margin-top: 16px;
+}
+
+.hero-status,
+.metric-card,
+.panel {
+  backdrop-filter: blur(16px);
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  box-shadow: var(--shadow);
+}
+
+.hero-status {
+  border-radius: 24px;
+  padding: 20px;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 0.9rem;
+  margin-bottom: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.status-pill.live {
+  color: #0c2318;
+  background: var(--success);
+}
+
+.status-pill.stale {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.hero-mini-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.hero-mini-grid span {
+  display: block;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.hero-mini-grid strong {
+  font-size: 1.3rem;
+}
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 18px;
+  margin-bottom: 18px;
+}
+
+.metric-card {
+  border-radius: 24px;
+  padding: 20px;
+}
+
+.metric-card.warning {
+  background: linear-gradient(180deg, rgba(255, 209, 102, 0.14), rgba(10, 16, 32, 0.76));
+}
+
+.metric-card.cool {
+  background: linear-gradient(180deg, rgba(121, 199, 255, 0.14), rgba(10, 16, 32, 0.76));
+}
+
+.metric-label,
+.metric-subtext,
+.panel-heading span,
+.feed-item span,
+.empty-state {
+  color: var(--muted);
+}
+
+.metric-label {
+  display: block;
+  margin-bottom: 12px;
+}
+
+.metric-value {
+  font-size: 2rem;
+  display: block;
+  margin-bottom: 8px;
+}
+
+.content-grid {
+  display: grid;
+  grid-template-columns: 1.3fr 0.9fr;
+  gap: 18px;
+}
+
+.panel {
+  border-radius: 28px;
+  padding: 22px;
+}
+
+.panel.large {
+  min-height: 100%;
+}
+
+.panel-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.chart-stack,
+.health-list,
+.device-strip,
+.feed {
+  display: grid;
+  gap: 14px;
+}
+
+.chart-card {
+  border-radius: 22px;
+  padding: 18px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.chart-copy {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 8px;
+}
+
+.chart-copy strong {
+  font-size: 1.5rem;
+}
+
+.sparkline {
+  width: 100%;
+  height: 68px;
+}
+
+.health-list {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 16px;
+}
+
+.health-list div {
+  border-radius: 18px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.health-list strong {
+  display: block;
+  margin-top: 10px;
+  font-size: 1.8rem;
+}
+
+.device-strip {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.device-pill,
+.feed-item {
+  border-radius: 18px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.device-pill {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.device-pill.online strong,
+.status-badge.online {
+  color: var(--success);
+}
+
+.device-pill.warning strong,
+.status-badge.warning {
+  color: var(--warning);
+}
+
+.device-pill.offline strong,
+.status-badge.offline {
+  color: var(--danger);
+}
+
+.feed-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: start;
+}
+
+.feed-item p {
+  margin: 6px 0 0;
+}
+
+.severity-critical {
+  border-left: 4px solid var(--danger);
+}
+
+.severity-high {
+  border-left: 4px solid var(--accent);
+}
+
+.severity-medium {
+  border-left: 4px solid var(--warning);
+}
+
+.table-wrap {
+  overflow: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 14px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+th {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.status-badge {
+  text-transform: capitalize;
+  font-weight: 700;
+}
+
+.empty-state {
+  margin: 0;
+}
+
+@media (max-width: 1100px) {
+  .hero,
+  .content-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .metrics-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .app-shell {
+    padding: 18px;
+  }
+
+  .metrics-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .hero h1 {
+    max-width: none;
+  }
+
+  .hero-mini-grid,
+  .health-list {
+    grid-template-columns: 1fr;
+  }
+}
