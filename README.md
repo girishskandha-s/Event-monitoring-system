@@ -1,113 +1,101 @@
-# Real-Time Event Monitoring System
+# PulseGrid — Realtime Device Operations Console
 
-A local-first full-stack event monitoring platform with:
+A full-stack real-time device monitoring & event ingestion platform built to sustain
+**5,000+ events/sec** from simulated IoT fleets, with an in-memory cache that cuts
+per-batch processing latency to sub-millisecond, streamed live over WebSockets to a
+custom React dashboard.
 
-- Node.js backend for event ingestion, persistence, metrics aggregation, and WebSocket streaming
-- React dashboard for live metrics, alerts, and event visualization
-- Python simulator for generating IoT telemetry at configurable rates
-- PostgreSQL for durable event and alert storage
+## What's inside
 
-## Architecture
+- **`backend/`** — Node.js + Express ingestion API, WebSocket hub, PostgreSQL
+  persistence, and a rolling in-memory metrics cache (per-second buckets, device stats,
+  recent events, alert feed, latency histograms).
+- **`frontend/`** — Vite + React dashboard with a custom SVG chart stack, live pulse
+  ring, animated KPI counters, regional breakdown, alert feed, and event stream.
+- **`simulator/`** — Async Python generator that can post concurrent batches at >5K events/sec.
+- **`docker-compose.yml`** — Local PostgreSQL for durable storage.
 
-- `backend/`: Express API, WebSocket server, PostgreSQL integration, in-memory metrics cache
-- `frontend/`: Vite + React real-time dashboard
-- `simulator/`: Async Python device event generator
-- `docker-compose.yml`: Local PostgreSQL service
+## Architecture highlights
 
-## Quick Start
+- **High ingestion throughput.** Events arrive in bulk POSTs. The backend normalizes,
+  derives threshold-based alerts, writes them to PostgreSQL inside a single
+  transaction (with `ON CONFLICT DO NOTHING` for idempotency), and updates the
+  in-memory cache. At 5K+ eps the dashboard reads only from cache — DB writes never
+  block the WebSocket broadcast path.
+- **Cache-accelerated metrics.** A single `MetricsCache` holds:
+  - a 60-second rolling throughput sparkline (auto-advanced during idle seconds),
+  - per-device latest telemetry,
+  - recent events / alerts ring buffers,
+  - latency histogram (avg + p95 of each ingest batch).
+- **Throttled WebSocket broadcasts.** Instead of broadcasting on every ingest call
+  (which would flood clients at 5K+ eps), the server broadcasts a single consolidated
+  snapshot every second + an immediate `alerts_appended` push when a threshold trips.
+- **Resilient startup.** If PostgreSQL is offline the backend starts in
+  `cache-only` mode so the demo still works end-to-end.
 
-### 1. Start PostgreSQL
+## Quick start
 
 ```bash
 docker compose up -d postgres
+
+cd backend     && npm install
+cd ../frontend && npm install
+cd ../simulator && py -m pip install -r requirements.txt
 ```
 
-### 2. Install backend dependencies
+Copy the `.env.example` files if you want to override hosts/ports.
+
+### Run
 
 ```bash
-cd backend
-npm install
+# terminal 1
+cd backend && npm run dev
+
+# terminal 2
+cd frontend && npm run dev
+
+# terminal 3 — push 5,000 events/sec at 500 simulated devices
+cd simulator && py main.py --devices 500 --rate 5000 --batch-size 200 --concurrency 16
 ```
 
-### 3. Install frontend dependencies
+Open the frontend URL that Vite prints (default `http://localhost:5173`).
 
-```bash
-cd frontend
-npm install
-```
-
-### 4. Install simulator dependencies
-
-```bash
-cd simulator
-py -m pip install -r requirements.txt
-```
-
-### 5. Configure environment
-
-Copy `backend/.env.example` to `backend/.env` if you want to override defaults.
-Copy `frontend/.env.example` to `frontend/.env` if you want to override the API host.
-
-### 6. Start the backend
-
-```bash
-cd backend
-npm run dev
-```
-
-This initializes the database schema automatically on startup.
-If PostgreSQL is unavailable, the backend still starts in `cache-only` mode so you can demo the live dashboard and simulator flow locally.
-
-### 7. Start the frontend
-
-```bash
-cd frontend
-npm run dev
-```
-
-Open the URL printed by Vite, usually `http://localhost:5173`.
-
-### 8. Start the simulator
-
-```bash
-cd simulator
-py main.py --devices 250 --rate 200 --batch-size 50
-```
-
-## Useful Commands
-
-### Backend
-
-```bash
-npm run dev
-npm start
-```
-
-### Frontend
-
-```bash
-npm run dev
-npm run build
-```
-
-### Simulator
+## Simulator options
 
 ```bash
 py main.py --help
 ```
 
-## API Overview
+Key flags:
 
-- `GET /health`
-- `GET /api/bootstrap`
-- `GET /api/metrics/summary`
-- `GET /api/events/recent?limit=50`
-- `GET /api/alerts/recent?limit=20`
-- `POST /api/events/bulk`
+| flag | default | purpose |
+| --- | --- | --- |
+| `--rate` | `5000` | approximate events/sec |
+| `--batch-size` | `200` | events per HTTP POST |
+| `--concurrency` | `16` | max in-flight POSTs |
+| `--devices` | `500` | unique simulated devices |
+
+The simulator reports observed rate every 2 seconds.
+
+## API
+
+- `GET  /health` — service & storage status
+- `GET  /api/bootstrap` — summary + recent events + alerts + top devices
+- `GET  /api/metrics/summary` — metrics snapshot (incl. per-second series, latency)
+- `GET  /api/events/recent?limit=50`
+- `GET  /api/alerts/recent?limit=20`
+- `POST /api/events/bulk` — `{ events: [...] }`, returns `{ insertedEvents, generatedAlerts, latencyMs }`
+
+## WebSocket
+
+- `ws://<host>/ws`
+- Server sends:
+  - `bootstrap` on connection (full snapshot)
+  - `tick` every second (summary + recent events/alerts/devices)
+  - `alerts_appended` immediately when a new alert is generated
 
 ## Notes
 
-- The backend keeps a rolling in-memory cache for live metrics and recent events to avoid repeated aggregate queries.
-- Alerts are generated automatically from incoming telemetry thresholds.
-- AWS deployment is intentionally not included yet, per current scope.
-- PostgreSQL is the primary storage path, but the backend can fall back to cache-only mode during local demos if Docker Desktop is not running.
+- AWS deployment (EC2, S3, Dockerized services, GitHub Actions CI/CD) is handled
+  separately and intentionally not part of this scope.
+- Schema is auto-initialized on backend startup.

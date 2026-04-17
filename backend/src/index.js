@@ -14,7 +14,7 @@ app.use(
     origin: config.frontendOrigin,
   })
 );
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '8mb' }));
 app.use(router);
 
 app.use((error, _req, res, _next) => {
@@ -27,18 +27,22 @@ app.use((error, _req, res, _next) => {
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 
+function buildBootstrapPayload() {
+  return {
+    summary: metricsCache.getSummary(),
+    recentEvents: metricsCache.getRecentEvents(30),
+    recentAlerts: metricsCache.getRecentAlerts(12),
+    topDevices: metricsCache.getTopDevices(12),
+  };
+}
+
 wss.on('connection', (socket) => {
   websocketHub.add(socket);
 
   socket.send(
     JSON.stringify({
       type: 'bootstrap',
-      payload: {
-        summary: metricsCache.getSummary(),
-        recentEvents: metricsCache.getRecentEvents(20),
-        recentAlerts: metricsCache.getRecentAlerts(12),
-        topDevices: metricsCache.getTopDevices(8),
-      },
+      payload: buildBootstrapPayload(),
       sentAt: new Date().toISOString(),
     })
   );
@@ -48,10 +52,14 @@ wss.on('connection', (socket) => {
   });
 });
 
+// Single, steady 1Hz broadcast. Handles arbitrary ingest rates without flooding.
 setInterval(() => {
-  websocketHub.broadcast('summary_tick', {
+  if (websocketHub.clients.size === 0) return;
+  websocketHub.broadcast('tick', {
     summary: metricsCache.getSummary(),
-    topDevices: metricsCache.getTopDevices(8),
+    recentEvents: metricsCache.getRecentEvents(30),
+    recentAlerts: metricsCache.getRecentAlerts(12),
+    topDevices: metricsCache.getTopDevices(12),
   });
 }, 1000);
 

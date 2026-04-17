@@ -17,9 +17,9 @@ router.get('/health', (_req, res) => {
 router.get('/api/bootstrap', (_req, res) => {
   res.json({
     summary: metricsCache.getSummary(),
-    recentEvents: metricsCache.getRecentEvents(20),
+    recentEvents: metricsCache.getRecentEvents(30),
     recentAlerts: metricsCache.getRecentAlerts(12),
-    topDevices: metricsCache.getTopDevices(8),
+    topDevices: metricsCache.getTopDevices(12),
   });
 });
 

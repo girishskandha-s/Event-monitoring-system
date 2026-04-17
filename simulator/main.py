@@ -12,6 +12,8 @@ import aiohttp
 
 DEVICE_TYPES = ["thermostat", "camera", "freezer", "meter", "pump"]
 REGIONS = ["us-east", "us-west", "eu-central", "ap-south"]
+
+
 @dataclass
 class DeviceState:
     device_id: str
@@ -70,55 +72,127 @@ def make_event(device: DeviceState, tick: int) -> dict:
     }
 
 
-async def post_batch(session: aiohttp.ClientSession, endpoint: str, batch: List[dict]) -> None:
-    async with session.post(endpoint, json={"events": batch}) as response:
-        if response.status >= 400:
-            body = await response.text()
-            raise RuntimeError(f"Ingestion failed with {response.status}: {body}")
+async def post_batch(
+    session: aiohttp.ClientSession,
+    endpoint: str,
+    batch: List[dict],
+    stats: dict,
+) -> None:
+    try:
+        async with session.post(endpoint, json={"events": batch}) as response:
+            if response.status >= 400:
+                body = await response.text()
+                stats["errors"] += 1
+                if stats["errors"] <= 5:
+                    print(f"[warn] Ingestion failed with {response.status}: {body[:120]}")
+            else:
+                stats["posted_events"] += len(batch)
+                stats["posted_batches"] += 1
+    except Exception as exc:  # noqa: BLE001
+        stats["errors"] += 1
+        if stats["errors"] <= 5:
+            print(f"[warn] Request failed: {exc}")
 
 
-async def run_simulator(base_url: str, device_count: int, rate: int, batch_size: int) -> None:
+async def run_simulator(
+    base_url: str,
+    device_count: int,
+    rate: int,
+    batch_size: int,
+    concurrency: int,
+) -> None:
     endpoint = f"{base_url.rstrip('/')}/api/events/bulk"
     devices = build_devices(device_count)
     tick = 0
-    print(f"Streaming to {endpoint} with {device_count} devices at ~{rate} events/sec")
+    print(
+        f"Streaming to {endpoint} with {device_count} devices at ~{rate} events/sec "
+        f"(batch={batch_size}, concurrency={concurrency})"
+    )
 
+    connector = aiohttp.TCPConnector(limit=concurrency * 2, ttl_dns_cache=300)
     timeout = aiohttp.ClientTimeout(total=30)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+    stats = {"posted_events": 0, "posted_batches": 0, "errors": 0}
+    reporter_started = time.perf_counter()
+    last_report = reporter_started
+
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
         while True:
             started = time.perf_counter()
-            batch = []
-            events_this_cycle = max(rate, batch_size)
+            pending: List[asyncio.Task] = []
 
-            for _ in range(events_this_cycle):
+            total_events = max(rate, batch_size)
+            batch: List[dict] = []
+
+            for _ in range(total_events):
                 tick += 1
                 device = random.choice(devices)
                 batch.append(make_event(device, tick))
-
                 if len(batch) >= batch_size:
-                    await post_batch(session, endpoint, batch)
+                    task = asyncio.create_task(
+                        post_batch(session, endpoint, batch, stats)
+                    )
+                    pending.append(task)
                     batch = []
+                    if len(pending) >= concurrency:
+                        # Drain down to concurrency to avoid unbounded growth
+                        done, pending_set = await asyncio.wait(
+                            pending, return_when=asyncio.FIRST_COMPLETED
+                        )
+                        pending = list(pending_set)
 
             if batch:
-                await post_batch(session, endpoint, batch)
+                task = asyncio.create_task(
+                    post_batch(session, endpoint, batch, stats)
+                )
+                pending.append(task)
+
+            if pending:
+                await asyncio.gather(*pending)
+
+            now = time.perf_counter()
+            elapsed_window = now - last_report
+            if elapsed_window >= 2.0:
+                observed_rate = stats["posted_events"] / max(now - reporter_started, 0.001)
+                print(
+                    f"[sim] posted={stats['posted_events']} "
+                    f"batches={stats['posted_batches']} "
+                    f"errors={stats['errors']} "
+                    f"avg_rate={observed_rate:.0f} eps"
+                )
+                last_report = now
 
             elapsed = time.perf_counter() - started
             sleep_for = max(0.0, 1.0 - elapsed)
-            await asyncio.sleep(sleep_for)
+            if sleep_for:
+                await asyncio.sleep(sleep_for)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Real-time IoT event simulator")
     parser.add_argument("--base-url", default="http://localhost:4000", help="Backend base URL")
-    parser.add_argument("--devices", type=int, default=250, help="Number of simulated devices")
-    parser.add_argument("--rate", type=int, default=200, help="Approximate events per second")
-    parser.add_argument("--batch-size", type=int, default=50, help="Events per request batch")
+    parser.add_argument("--devices", type=int, default=500, help="Number of simulated devices")
+    parser.add_argument("--rate", type=int, default=5000, help="Approximate events per second")
+    parser.add_argument("--batch-size", type=int, default=200, help="Events per request batch")
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=16,
+        help="Maximum in-flight POST requests",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
     try:
-        asyncio.run(run_simulator(args.base_url, args.devices, args.rate, args.batch_size))
+        asyncio.run(
+            run_simulator(
+                args.base_url,
+                args.devices,
+                args.rate,
+                args.batch_size,
+                args.concurrency,
+            )
+        )
     except KeyboardInterrupt:
         print("Simulator stopped")

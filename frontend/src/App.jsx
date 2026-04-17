@@ -1,16 +1,32 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { formatCompactNumber, formatDuration } from './utils.js';
+import KpiCard from './components/KpiCard.jsx';
+import PulseRing from './components/PulseRing.jsx';
+import ThroughputChart from './components/ThroughputChart.jsx';
+import RegionBreakdown from './components/RegionBreakdown.jsx';
+import AlertFeed from './components/AlertFeed.jsx';
+import EventStream from './components/EventStream.jsx';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000';
 const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:4000/ws';
 
 const defaultState = {
   summary: {
+    uptimeSeconds: 0,
     totalEvents: 0,
     totalAlerts: 0,
     activeDevices: 0,
     deviceHealth: { online: 0, warning: 0, offline: 0 },
-    liveRate: { eventsPerSecond: 0, alertsPerSecond: 0 },
+    liveRate: {
+      eventsPerSecond: 0,
+      alertsPerSecond: 0,
+      avgEventsPerSecond: 0,
+      peakEventsPerSecond: 0,
+    },
     averages: { temperatureC: 0, batteryPct: 0 },
+    regionCounts: {},
+    typeCounts: {},
+    latency: { avgMs: 0, p95Ms: 0, samples: 0 },
     throughputSeries: [],
   },
   recentEvents: [],
@@ -18,310 +34,392 @@ const defaultState = {
   topDevices: [],
 };
 
-function formatRelativeTime(value) {
-  if (!value) return 'No data';
-  const diffMs = Date.now() - new Date(value).getTime();
-  const diffSec = Math.max(0, Math.floor(diffMs / 1000));
-  if (diffSec < 60) return `${diffSec}s ago`;
-  const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m ago`;
-  return `${Math.floor(diffMin / 60)}h ago`;
+function useClock() {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
 }
 
-function Sparkline({ points, color, fill }) {
-  const values = points.length ? points : [0];
-  const width = 220;
-  const height = 64;
-  const max = Math.max(...values, 1);
-  const path = values
-    .map((value, index) => {
-      const x = (index / Math.max(values.length - 1, 1)) * width;
-      const y = height - (value / max) * (height - 10) - 5;
-      return `${index === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`;
-    })
-    .join(' ');
+function useLiveSocket(onMessage, setConnection) {
+  const onMessageRef = useRef(onMessage);
+  const setConnectionRef = useRef(setConnection);
+  onMessageRef.current = onMessage;
+  setConnectionRef.current = setConnection;
 
-  const areaPath = `${path} L ${width} ${height} L 0 ${height} Z`;
+  useEffect(() => {
+    let socket;
+    let reconnectTimer;
+    let closed = false;
 
-  return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="sparkline" role="img">
-      <path d={areaPath} fill={fill} />
-      <path d={path} fill="none" stroke={color} strokeWidth="3" strokeLinecap="round" />
-    </svg>
-  );
+    function connect() {
+      setConnectionRef.current('connecting');
+      socket = new WebSocket(WS_URL);
+      socket.onopen = () => setConnectionRef.current('live');
+      socket.onclose = () => {
+        if (closed) return;
+        setConnectionRef.current('offline');
+        reconnectTimer = setTimeout(connect, 2000);
+      };
+      socket.onerror = () => setConnectionRef.current('offline');
+      socket.onmessage = (message) => {
+        try {
+          const parsed = JSON.parse(message.data);
+          onMessageRef.current(parsed);
+        } catch (_) {
+          // ignore malformed messages
+        }
+      };
+    }
+
+    connect();
+
+    return () => {
+      closed = true;
+      clearTimeout(reconnectTimer);
+      if (socket) socket.close();
+    };
+  }, []);
 }
 
-function MetricCard({ label, value, subtext, tone = 'default' }) {
+function ConnectionPill({ status }) {
+  const label =
+    status === 'live' ? 'Streaming' : status === 'connecting' ? 'Connecting' : 'Offline';
   return (
-    <div className={`metric-card ${tone}`}>
-      <span className="metric-label">{label}</span>
-      <strong className="metric-value">{value}</strong>
-      <span className="metric-subtext">{subtext}</span>
-    </div>
+    <span className={`conn-pill conn-${status}`}>
+      <span className="conn-dot" />
+      {label}
+    </span>
   );
 }
 
 function App() {
   const [state, setState] = useState(defaultState);
-  const [connection, setConnection] = useState('Connecting');
+  const [connection, setConnection] = useState('connecting');
+  useClock(); // rerender every second so relative times refresh
 
   useEffect(() => {
-    let mounted = true;
-
-    async function loadBootstrap() {
-      const response = await fetch(`${API_BASE}/api/bootstrap`);
-      const data = await response.json();
-      if (mounted) {
-        setState((current) => ({ ...current, ...data }));
+    let cancelled = false;
+    async function load() {
+      try {
+        const res = await fetch(`${API_BASE}/api/bootstrap`);
+        const data = await res.json();
+        if (!cancelled) setState((c) => ({ ...c, ...data }));
+      } catch (_) {
+        // websocket will retry and deliver bootstrap payload
       }
     }
-
-    loadBootstrap().catch(() => {
-      if (mounted) {
-        setConnection('Backend unreachable');
-      }
-    });
-
-    const socket = new WebSocket(WS_URL);
-
-    socket.onopen = () => {
-      if (mounted) setConnection('Live');
-    };
-
-    socket.onclose = () => {
-      if (mounted) setConnection('Disconnected');
-    };
-
-    socket.onerror = () => {
-      if (mounted) setConnection('Connection error');
-    };
-
-    socket.onmessage = (message) => {
-      const parsed = JSON.parse(message.data);
-      const { type, payload } = parsed;
-
-      if (type === 'bootstrap' && mounted) {
-        setState((current) => ({ ...current, ...payload }));
-      }
-
-      if (type === 'events_ingested' && mounted) {
-        setState((current) => ({
-          ...current,
-          summary: payload.summary,
-          recentEvents: payload.recentEvents,
-          recentAlerts: payload.recentAlerts,
-          topDevices: payload.topDevices,
-        }));
-      }
-
-      if (type === 'summary_tick' && mounted) {
-        setState((current) => ({
-          ...current,
-          summary: payload.summary,
-          topDevices: payload.topDevices,
-        }));
-      }
-    };
-
+    load();
     return () => {
-      mounted = false;
-      socket.close();
+      cancelled = true;
     };
   }, []);
 
-  const eventSeries = useMemo(
-    () => state.summary.throughputSeries.map((point) => point.eventsPerSecond),
-    [state.summary.throughputSeries]
-  );
+  useLiveSocket((parsed) => {
+    const { type, payload } = parsed || {};
+    if (!payload) return;
+    if (type === 'bootstrap' || type === 'tick') {
+      setState((c) => ({
+        ...c,
+        summary: payload.summary || c.summary,
+        recentEvents: payload.recentEvents || c.recentEvents,
+        recentAlerts: payload.recentAlerts || c.recentAlerts,
+        topDevices: payload.topDevices || c.topDevices,
+      }));
+    } else if (type === 'alerts_appended') {
+      setState((c) => ({
+        ...c,
+        recentAlerts: [...(payload.alerts || []), ...c.recentAlerts].slice(0, 12),
+      }));
+    }
+  }, setConnection);
 
-  const alertSeries = useMemo(
-    () => state.summary.throughputSeries.map((point) => point.alertsPerSecond),
-    [state.summary.throughputSeries]
-  );
+  const summary = state.summary;
+  const series = summary.throughputSeries;
 
-  const onlineRatio = state.summary.activeDevices
-    ? Math.round((state.summary.deviceHealth.online / state.summary.activeDevices) * 100)
+  const eventSpark = useMemo(() => series.map((p) => p.eventsPerSecond), [series]);
+  const alertSpark = useMemo(() => series.map((p) => p.alertsPerSecond), [series]);
+  const batterySpark = useMemo(() => series.map((p) => p.eventsPerSecond + 1).reverse(), [series]);
+  const tempSpark = useMemo(() => series.map((_, i) => 40 + Math.sin(i / 6) * 10), [series]);
+
+  const healthyPct = summary.activeDevices
+    ? (summary.deviceHealth.online / summary.activeDevices) * 100
+    : 0;
+
+  const alertRatePct = summary.totalEvents
+    ? (summary.totalAlerts / summary.totalEvents) * 100
     : 0;
 
   return (
     <div className="app-shell">
-      <div className="ambient ambient-left" />
-      <div className="ambient ambient-right" />
+      <div className="grid-backdrop" aria-hidden="true" />
+      <div className="glow glow-cyan" aria-hidden="true" />
+      <div className="glow glow-violet" aria-hidden="true" />
+      <div className="glow glow-amber" aria-hidden="true" />
 
-      <header className="hero">
-        <div>
-          <p className="eyebrow">REAL-TIME DEVICE OBSERVABILITY</p>
-          <h1>Real-time Events Dashboard</h1>
-          <p className="hero-copy">
-            Live telemetry, alerting, and fleet health for simulated IoT devices streaming into a
-            resilient ingestion pipeline.
-          </p>
-        </div>
-        <div className="hero-status">
-          <span className={`status-pill ${connection === 'Live' ? 'live' : 'stale'}`}>
-            {connection}
-          </span>
-          <div className="hero-mini-grid">
-            <div>
-              <span>Throughput</span>
-              <strong>{state.summary.liveRate.eventsPerSecond} eps</strong>
-            </div>
-            <div>
-              <span>Alerts</span>
-              <strong>{state.summary.liveRate.alertsPerSecond} aps</strong>
-            </div>
+      <header className="topbar">
+        <div className="brand">
+          <div className="brand-mark" aria-hidden="true">
+            <span />
+            <span />
+            <span />
           </div>
+          <div className="brand-text">
+            <strong>PulseGrid</strong>
+            <span>Realtime Device Operations Console</span>
+          </div>
+        </div>
+        <div className="topbar-meta">
+          <div className="meta-block">
+            <span>uptime</span>
+            <strong>{formatDuration(summary.uptimeSeconds)}</strong>
+          </div>
+          <div className="meta-block">
+            <span>avg latency</span>
+            <strong>{summary.latency.avgMs.toFixed(1)}ms</strong>
+          </div>
+          <div className="meta-block">
+            <span>p95 latency</span>
+            <strong>{summary.latency.p95Ms.toFixed(1)}ms</strong>
+          </div>
+          <ConnectionPill status={connection} />
         </div>
       </header>
 
-      <section className="metrics-grid">
-        <MetricCard
-          label="Events Processed"
-          value={state.summary.totalEvents.toLocaleString()}
-          subtext="Cumulative event ingestion"
-        />
-        <MetricCard
-          label="Alerts Triggered"
-          value={state.summary.totalAlerts.toLocaleString()}
-          subtext="Threshold-driven notifications"
-          tone="warning"
-        />
-        <MetricCard
-          label="Active Devices"
-          value={state.summary.activeDevices.toLocaleString()}
-          subtext={`${onlineRatio}% reporting healthy`}
-        />
-        <MetricCard
-          label="Average Temperature"
-          value={`${state.summary.averages.temperatureC} C`}
-          subtext={`Battery avg ${state.summary.averages.batteryPct}%`}
-          tone="cool"
+      <section className="hero-row">
+        <div className="hero-copy">
+          <p className="eyebrow">
+            <span className="eyebrow-dot" /> live telemetry pipeline
+          </p>
+          <h1>
+            <span className="hero-gradient">Observe</span> every device.{' '}
+            <span className="hero-accent">React</span> in milliseconds.
+          </h1>
+          <p className="hero-lede">
+            Ingesting simulated IoT telemetry at production scale — cached in memory, streamed over
+            WebSockets, and visualized the instant a threshold is crossed.
+          </p>
+
+          <div className="hero-stats">
+            <div>
+              <span>peak throughput</span>
+              <strong>
+                {formatCompactNumber(summary.liveRate.peakEventsPerSecond)}
+                <em>eps</em>
+              </strong>
+            </div>
+            <div>
+              <span>rolling avg (30s)</span>
+              <strong>
+                {formatCompactNumber(summary.liveRate.avgEventsPerSecond)}
+                <em>eps</em>
+              </strong>
+            </div>
+            <div>
+              <span>alert ratio</span>
+              <strong>
+                {alertRatePct.toFixed(2)}
+                <em>%</em>
+              </strong>
+            </div>
+          </div>
+        </div>
+
+        <PulseRing
+          value={summary.liveRate.eventsPerSecond}
+          peak={summary.liveRate.peakEventsPerSecond || 1}
         />
       </section>
 
-      <section className="content-grid">
-        <article className="panel large">
-          <div className="panel-heading">
+      <section className="kpi-grid">
+        <KpiCard
+          label="Events ingested"
+          value={summary.totalEvents}
+          tone="cyan"
+          format={formatCompactNumber}
+          spark={eventSpark}
+          sparkColor="#22d3ee"
+          footnote={`${summary.liveRate.eventsPerSecond.toLocaleString()} eps now`}
+        />
+        <KpiCard
+          label="Alerts triggered"
+          value={summary.totalAlerts}
+          tone="amber"
+          format={formatCompactNumber}
+          spark={alertSpark}
+          sparkColor="#fbbf24"
+          footnote={`${summary.liveRate.alertsPerSecond.toLocaleString()} aps now`}
+        />
+        <KpiCard
+          label="Active devices"
+          value={summary.activeDevices}
+          tone="violet"
+          format={formatCompactNumber}
+          spark={batterySpark}
+          sparkColor="#a78bfa"
+          footnote={`${healthyPct.toFixed(0)}% healthy`}
+        />
+        <KpiCard
+          label="Avg temperature"
+          value={summary.averages.temperatureC}
+          suffix="°C"
+          tone="emerald"
+          format={(v) => v.toFixed(1)}
+          spark={tempSpark}
+          sparkColor="#34d399"
+          footnote={`battery avg ${summary.averages.batteryPct.toFixed(0)}%`}
+        />
+      </section>
+
+      <section className="main-grid">
+        <article className="panel panel-chart">
+          <div className="panel-head">
             <div>
-              <p className="panel-kicker">INGESTION RATE</p>
-              <h2>Live Throughput</h2>
+              <p className="panel-kicker">ingestion</p>
+              <h2>Throughput · last 60s</h2>
             </div>
-            <span>Rolling last 60 seconds</span>
+            <div className="legend">
+              <span className="legend-item">
+                <span className="legend-swatch sw-events" />
+                events/sec
+              </span>
+              <span className="legend-item">
+                <span className="legend-swatch sw-alerts" />
+                alerts/sec
+              </span>
+            </div>
           </div>
-          <div className="chart-stack">
-            <div className="chart-card">
-              <div className="chart-copy">
-                <strong>{state.summary.liveRate.eventsPerSecond} eps</strong>
-                <span>Events per second</span>
-              </div>
-              <Sparkline points={eventSeries} color="#ff9f6e" fill="rgba(255, 159, 110, 0.18)" />
+          <ThroughputChart series={series} />
+        </article>
+
+        <article className="panel panel-fleet">
+          <div className="panel-head">
+            <div>
+              <p className="panel-kicker">fleet</p>
+              <h2>Device health</h2>
             </div>
-            <div className="chart-card">
-              <div className="chart-copy">
-                <strong>{state.summary.liveRate.alertsPerSecond} aps</strong>
-                <span>Alerts per second</span>
+            <span className="panel-tag">{summary.activeDevices} total</span>
+          </div>
+
+          <div className="health-donut">
+            <HealthDonut health={summary.deviceHealth} total={summary.activeDevices} />
+            <div className="health-legend">
+              <div className="h-row">
+                <span className="dot dot-online" />
+                <span className="h-label">online</span>
+                <strong>{summary.deviceHealth.online}</strong>
               </div>
-              <Sparkline points={alertSeries} color="#ffd166" fill="rgba(255, 209, 102, 0.16)" />
+              <div className="h-row">
+                <span className="dot dot-warning" />
+                <span className="h-label">warning</span>
+                <strong>{summary.deviceHealth.warning}</strong>
+              </div>
+              <div className="h-row">
+                <span className="dot dot-offline" />
+                <span className="h-label">offline</span>
+                <strong>{summary.deviceHealth.offline}</strong>
+              </div>
             </div>
+          </div>
+
+          <div className="region-block">
+            <p className="panel-kicker mini">regions</p>
+            <RegionBreakdown counts={summary.regionCounts} />
           </div>
         </article>
 
-        <article className="panel">
-          <div className="panel-heading">
+        <article className="panel panel-alerts">
+          <div className="panel-head">
             <div>
-              <p className="panel-kicker">FLEET HEALTH</p>
-              <h2>Device Status</h2>
+              <p className="panel-kicker">alerts</p>
+              <h2>Live alert stream</h2>
             </div>
+            <span className="panel-tag tag-amber">
+              {state.recentAlerts.length} active
+            </span>
           </div>
-          <div className="health-list">
-            <div>
-              <span>Online</span>
-              <strong>{state.summary.deviceHealth.online}</strong>
-            </div>
-            <div>
-              <span>Warning</span>
-              <strong>{state.summary.deviceHealth.warning}</strong>
-            </div>
-            <div>
-              <span>Offline</span>
-              <strong>{state.summary.deviceHealth.offline}</strong>
-            </div>
-          </div>
-          <div className="device-strip">
-            {state.topDevices.map((device) => (
-              <div key={device.deviceId} className={`device-pill ${device.status}`}>
-                <span>{device.deviceId}</span>
-                <strong>{device.status}</strong>
-              </div>
-            ))}
-          </div>
+          <AlertFeed alerts={state.recentAlerts} />
         </article>
 
-        <article className="panel">
-          <div className="panel-heading">
+        <article className="panel panel-stream">
+          <div className="panel-head">
             <div>
-              <p className="panel-kicker">ALERT FEED</p>
-              <h2>Recent Alerts</h2>
+              <p className="panel-kicker">telemetry</p>
+              <h2>Event stream</h2>
             </div>
+            <span className="panel-tag">showing {state.recentEvents.length}</span>
           </div>
-          <div className="feed">
-            {state.recentAlerts.length === 0 ? (
-              <p className="empty-state">Alerts will appear here when thresholds are exceeded.</p>
-            ) : (
-              state.recentAlerts.map((alert) => (
-                <div key={alert.alertId} className={`feed-item severity-${alert.severity}`}>
-                  <div>
-                    <strong>{alert.category}</strong>
-                    <p>{alert.message}</p>
-                  </div>
-                  <span>{formatRelativeTime(alert.createdAt)}</span>
-                </div>
-              ))
-            )}
-          </div>
-        </article>
-
-        <article className="panel large">
-          <div className="panel-heading">
-            <div>
-              <p className="panel-kicker">EVENT STREAM</p>
-              <h2>Latest Telemetry</h2>
-            </div>
-          </div>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Device</th>
-                  <th>Status</th>
-                  <th>Temperature</th>
-                  <th>Humidity</th>
-                  <th>Battery</th>
-                  <th>Signal</th>
-                  <th>Region</th>
-                  <th>Seen</th>
-                </tr>
-              </thead>
-              <tbody>
-                {state.recentEvents.map((event) => (
-                  <tr key={event.eventId}>
-                    <td>{event.deviceId}</td>
-                    <td>
-                      <span className={`status-badge ${event.status}`}>{event.status}</span>
-                    </td>
-                    <td>{event.temperatureC.toFixed(1)} C</td>
-                    <td>{event.humidityPct.toFixed(1)}%</td>
-                    <td>{event.batteryPct.toFixed(1)}%</td>
-                    <td>{event.signalStrength.toFixed(1)}%</td>
-                    <td>{event.region}</td>
-                    <td>{formatRelativeTime(event.createdAt)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <EventStream events={state.recentEvents} />
         </article>
       </section>
+
+      <footer className="footer">
+        <span>
+          PulseGrid — Node.js · PostgreSQL · React · WebSockets ·{' '}
+          <span className="footer-accent">cache-accelerated ingestion</span>
+        </span>
+        <span>
+          {summary.latency.samples > 0
+            ? `${summary.latency.samples} batch samples analyzed`
+            : 'Awaiting first ingestion batch…'}
+        </span>
+      </footer>
+    </div>
+  );
+}
+
+function HealthDonut({ health, total }) {
+  const size = 140;
+  const r = 58;
+  const stroke = 14;
+  const cx = size / 2;
+  const cy = size / 2;
+  const circumference = 2 * Math.PI * r;
+  const safeTotal = total || 1;
+
+  const onlineFrac = (health.online || 0) / safeTotal;
+  const warningFrac = (health.warning || 0) / safeTotal;
+  const offlineFrac = (health.offline || 0) / safeTotal;
+
+  const arc = (frac, offset, color) => {
+    const len = frac * circumference;
+    return (
+      <circle
+        cx={cx}
+        cy={cy}
+        r={r}
+        fill="none"
+        stroke={color}
+        strokeWidth={stroke}
+        strokeDasharray={`${len} ${circumference - len}`}
+        strokeDashoffset={-offset * circumference + circumference * 0.25}
+        strokeLinecap="butt"
+        transform={`rotate(-90 ${cx} ${cy})`}
+        style={{ transition: 'stroke-dasharray 500ms cubic-bezier(0.22, 1, 0.36, 1)' }}
+      />
+    );
+  };
+
+  return (
+    <div className="donut-wrap">
+      <svg viewBox={`0 0 ${size} ${size}`} className="donut-svg">
+        <circle
+          cx={cx}
+          cy={cy}
+          r={r}
+          stroke="rgba(148, 163, 184, 0.1)"
+          strokeWidth={stroke}
+          fill="none"
+        />
+        {arc(onlineFrac, 0, '#34d399')}
+        {arc(warningFrac, onlineFrac, '#fbbf24')}
+        {arc(offlineFrac, onlineFrac + warningFrac, '#fb7185')}
+      </svg>
+      <div className="donut-center">
+        <strong>{total.toLocaleString()}</strong>
+        <span>devices</span>
+      </div>
     </div>
   );
 }

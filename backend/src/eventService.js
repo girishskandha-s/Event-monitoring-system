@@ -32,24 +32,25 @@ function buildBulkInsertPlaceholders(records, columns) {
   return { placeholders, values };
 }
 
+const eventColumns = [
+  'eventId',
+  'deviceId',
+  'deviceType',
+  'status',
+  'temperatureC',
+  'humidityPct',
+  'batteryPct',
+  'signalStrength',
+  'region',
+  'createdAt',
+];
+
+const alertColumns = ['alertId', 'eventId', 'deviceId', 'severity', 'category', 'message', 'createdAt'];
+
 export async function ingestEvents(rawEvents) {
+  const startedAt = performance.now();
   const events = rawEvents.map(normalizeEvent);
   const alerts = deriveAlerts(events);
-
-  const eventColumns = [
-    'eventId',
-    'deviceId',
-    'deviceType',
-    'status',
-    'temperatureC',
-    'humidityPct',
-    'batteryPct',
-    'signalStrength',
-    'region',
-    'createdAt',
-  ];
-
-  const alertColumns = ['alertId', 'eventId', 'deviceId', 'severity', 'category', 'message', 'createdAt'];
 
   if (isDatabaseReady()) {
     const client = await pool.connect();
@@ -112,17 +113,22 @@ export async function ingestEvents(rawEvents) {
   metricsCache.ingestEvents(events);
   metricsCache.ingestAlerts(alerts);
 
-  websocketHub.broadcast('events_ingested', {
-    count: events.length,
-    alertsCreated: alerts.length,
-    summary: metricsCache.getSummary(),
-    recentEvents: metricsCache.getRecentEvents(12),
-    recentAlerts: metricsCache.getRecentAlerts(8),
-    topDevices: metricsCache.getTopDevices(8),
-  });
+  const latencyMs = performance.now() - startedAt;
+  metricsCache.recordLatency(latencyMs);
+
+  // NOTE: we intentionally do NOT broadcast on every ingest call. At 5K+ eps
+  // this would flood clients. A scheduled tick in index.js handles broadcasting.
+  // We only fire a lightweight alerts broadcast so operators see alerts immediately.
+  if (alerts.length > 0) {
+    websocketHub.broadcast('alerts_appended', {
+      alerts: alerts.slice(0, 8),
+      totalAlerts: metricsCache.totalAlerts,
+    });
+  }
 
   return {
     insertedEvents: events.length,
     generatedAlerts: alerts.length,
+    latencyMs: Number(latencyMs.toFixed(2)),
   };
 }
